@@ -1,0 +1,17 @@
+#!/usr/bin/perl -I./script
+
+# *.cから*.hを出力
+
+use util;
+
+if ($cfile = $ARGV[0] and -e $cfile and $cfile =~ /\.c$/) {
+  shift @ARGV;
+  ($name = $cfile) =~ s/\.c$//;
+  $ifndef_name = util::ifndef_name($name.'.h');
+
+  print '#ifndef '.$ifndef_name."\n";
+  for $file (@ARGV) {
+    print "#include \"".$file."\"\n";
+  }
+  print '#endif /* '.$ifndef_name.' */';
+}

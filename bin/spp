@@ -1,0 +1,322 @@
+#!/bin/usr/env gosh
+
+#| CとSの基本型
+
+typedef unsigned char Byte;
+typedef unsigned char Char;
+typedef Byte Bool;
+typedef Char* String;
+typedef int unsigned Pointer;
+typedef int Int;
+typedef short Short;
+typedef long long Long;
+typedef float Float;
+typedef double Double;
+
+#define false (Bool)0
+#define true (Bool)1
+
+|#
+
+(use srfi-1)
+(use util.match)
+
+(define (spp-compile exp)
+  (apply compile exp))
+
+(define-class <spp-primitive-type> ()
+  ((name :init-keyword :name)
+   (size :init-keyword :size)))
+
+(define-method size ((spt <spp-primitive-type>))
+  (slot-ref spt 'size))
+
+(define *spp-primitive-type-table* (make-hash-table))
+
+(eval
+ (cons 'begin
+       (map (lambda (x)
+              (let ((name (car x))
+                    (size (cdr x)))
+                (list 'define name (make <spp-primitive-type> :name name :size size))))
+            '((Byte . 1)
+              (Char . 1)
+              (Bool . 1)
+              (String . 4)
+              (Pointer . 4)
+              (Short . 2)
+              (Int . 4)
+              (Long . 8)
+              (Float . 4)
+              (Double . 8))))
+ (current-module))
+
+(define-class <spp-type> (<spp-primitive-type>)
+  ((struct :init-keyword :struct)))
+
+(define (spp-make-type name struct)
+  ;; struct = ((name . type(<spp-type>|<spp-primitive-type>))))
+  (make <spp-type>
+    :name name
+    :struct struct
+    :size (apply + (map (compose size cdr) struct))))
+
+(define-class <spp-fun> ()
+  ((args :init-keyword :args) ;; ((name . type(<spp-primitive-type>)) ...)
+   (body :init-keyword :body)
+   (return-type :init-keyword :return-type)))
+
+(define (spp-make-fun args body)
+  (make <spp-fun>
+    :args args
+    :body body
+    :return-type '()))
+
+(define (spp-get-return-type args body)
+  )
+
+(define-class <spp-c-macro> ()
+  ((proc :init-keyword :proc)))
+
+(define-class <spp-macro> ()
+  ((proc :init-keyword :)))
+
+(define-class <spp-env> ()
+  ((parent-env :init-keyword :parent-env :init-value #f)
+   (frame :init-form (make-hash-table))))
+
+(define *spp-global-env* (make <spp-env>))
+
+(define (spp-get-variable env name)
+  (and (hash-table-get (ref env 'frame) name #f)
+       (spp-get-variable (ref env 'parent-env))))
+
+(define (spp-put-variable! env name val)
+  (hash-table-put! (ref env 'frame) name val))
+
+(define (spp-analyze exp . env)
+  ;; 変数を置換え、最適化、マクロ展開
+  (let ((env (get-optional env *spp-global-env*)))
+    ()))
+
+(define (spp-apply exp)
+  ;; プリミティブに分解
+  )
+
+(define (spp-compile exp)
+
+  (define (symbol-name? . args)
+    (lambda (symbol)
+      (memq symbol args)))
+
+  (define compile spp-compile)
+  
+  (define (compile* exp-or-exps)
+    (if (and (list? exp-or-exps) (list? (car exp-or-exps)))
+        (let lp ((exps exp-or-exps))
+          (if (null? (cdr exps))
+              (spp-compile (car exps))
+              (begin (spp-compile (car exps))
+                     (display ",")
+                     (lp (cdr exps)))))
+        (spp-compile exp-or-exps)))
+
+  (define (sname->cname sname)
+    (with-output-to-string
+      (lambda ()
+        (let ((s (string->list (x->string sname))))
+          (when (not (char-alphabetic? (car s)))
+            (display "_") (display (char->integer (car s)))
+            (set! s (cdr s)))
+          (dolist (c s)
+            (if (or (char-alphabetic? c) (char-numeric? c))
+                (display c)
+                (display (char->integer (car s)))))))))
+
+  (define (end) (display ";"))
+
+  (define (primitive? x)
+    (cond (((any-pred string? number?) x) x)
+          (else #f)))
+
+  (letrec-syntax ((C (syntax-rules ()
+                       ((_ x)
+                        (C #\( x #\)))
+                       ((_ a x b)
+                        (begin (display 'a)
+                               x
+                               (display 'b)))))
+                  (T2 (syntax-rules ()
+                        ((_ t e)
+                         (begin
+                           (display "(")
+                           (display (sname->cname 't))
+                           (display ")")
+                           e)))))
+                         
+    ;; Cコードを生成
+    (match exp
+      (('begin . bodys)
+       (let lp ((exps bodys))
+         (if (null? (cdr exps))
+             (spp-compile (car exps))
+             (begin (spp-compile (car exps))
+                    (display ",")
+                    (lp (cdr exps))))))
+       
+      (('block . bodys)
+       (display "{")
+       (dolist (body bodys) (spp-compile body))
+       (display "}"))
+
+      (('for (x y z) bodys)
+       (display "for(")
+       (when x (spp-compile x)) (end)
+       (when y (spp-compile y)) (end)
+       (when z (spp-compile z))
+       (spp-compile bodys))
+    
+      (('while expr bodys)
+       (display "while(")
+       (spp-compile expr)
+       (display ")")
+       (spp-compile bodys))
+
+      (((? (symbol-name? '++ '--) x) (? symbol? y))
+       (format #t "~a~a" x y))
+
+      (((? symbol? y) (? (symbol-name? '++ '--) x))
+       (format #t "~a~a" y x))
+
+      (((? (symbol-name? '&& '||) O) x y)
+       (display "((")
+       (spp-compile x)
+       (display ")&&(")
+       (spp-compile y)
+       (display "))"))
+
+      (('if e x 'else y)
+       (display "if(")
+       (spp-compile e)
+       (display ")")
+       (compile x)
+       (display " else ")
+       (compile y))
+     
+      (('if e x)
+       (display "if(")
+       (compile e)
+       (display ")")
+       (compile x))
+
+      (('? e x y)
+       x)
+
+      (('label (? symbol? x))
+       (display (sname->cname x)) (display ":\n"))
+
+      (('goto (? symbol? x))
+       (display "goto ") (display (sname->cname x)) (end))
+
+      (('return exp)
+       (display "return")
+       (C (compile exp)))
+
+      ((? symbol? x)
+       (display (sname->cname x)))
+
+      ((? number? x)
+       (write x))
+
+      ((? char? x)
+       (display "'") (display x) (display "'"))
+
+      ((? string? x)
+       (write x))
+
+      (((? (symbol-name? '+ '- '* '/ '% '= '== '+= '-= '*= '/= '%=) O) x y)
+       (C (compile x))
+       (display O)
+       (C (compile y)))
+
+      (('! x)
+       (T2 Bool (compile x)))
+
+      ;; 関数呼び出し
+      (((? symbol? x) . args) 
+       (display (sname->cname x))
+       (C (compile (cons 'begin args))))
+      
+      )))
+
+(spp-compile
+ '(while (c --)
+    (block
+     (printf "hoge" #\c))))
+
+;;(spp-compile '(printf 8 8))
+
+;; (spp-make-fun `((byte Byte*))
+;;               `(let ((count (int unsigned register)))
+;;                  (while (null? (byte ++))
+;;                    (++ count))))
+
+;; (def (byte-length (Byte* byte))
+;;   (let ((count (int unsigned register)))
+;;     (while (null? (byte ++))
+;;       (++ count))
+;;     count)) ->
+
+;; unsigned int byte_length (Byte* byte) {
+;;   int unsigned register;
+;; }
+
+;; (define-module spp
+;;   (use srfi-1)
+;;   (use util.match)
+
+;;   (define (spp-preprocessor sp)
+;;     (cond ((list? sp)
+;;            (cond ((spp-get (car sp) #f)
+;;                   => (lambda (macro)
+;;                        (let ((args (cdr sp)))
+;;                          (spp-preprocessor (apply macro (map spp-preprocessor args))))))
+;;                  (else
+;;                   (when (string? (car sp))
+;;                     (display (car sp))
+;;                     (set! sp (cdr sp)))
+;;                   (for-each spp-preprocessor sp)
+;;                   (display ";"))))
+;;           (((any-pred string? symbol? number?) sp)
+;;            (write sp))
+;;           ((char? sp)
+;;            (format #t "'~a'" sp))
+;;           (else
+;;            (error "spp-preprocessor: ~a not found" sp)))
+;;     (display " "))
+
+;;   (define *macro-table* (make-hash-table))
+
+;;   (define spp-get (pa$ hash-table-get *macro-table*))
+
+;; ;;   (define (spp->c program)
+;; ;;     (print 
+
+;;   (define-syntax define-spp
+;;     (syntax-rules ()
+;;       ((_ (NAME . ARGS) . BODY)
+;;        (define-spp NAME (lambda ARGS . BODY)))
+;;       ((_ NAME ((MATTERS ...) ...) ...)
+;;        (define-spp NAME (match-lambda ((MATTERS ...) ...) ...)))
+;;       ((_ NAME MACRO)
+;;        (hash-table-put! *macro-table* 'NAME MACRO))))
+
+;;   (define-spp struct
+;;     (((name type))
+;;      (list name type)))
+
+;;   ((spp-get 'struct) '((name (int))))
+  
+;;   )
+
+(provide "spp")

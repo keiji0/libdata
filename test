@@ -1,0 +1,10 @@
+#!/bin/sh
+
+echo -n "Testing" $1;
+
+if (./$1 1>&-); then
+    echo " -> OK";
+else
+    echo " -> ERROR";
+fi
+

@@ -1,0 +1,14 @@
+#!/usr/bin/perl -I./script
+
+use util;
+
+for $file (@ARGV) {
+  $head_name = 'EXTERN_'.util::ifndef_name($file).'_H';
+  print "#ifndef ",$head_name,"\n";
+  {
+    open IN, $file;
+    grep {/^(extern .+\))$/ && print $1,";\n"} <IN>;
+    close IN;
+  }
+  print "#endif /* ",$head_name," */";
+}
